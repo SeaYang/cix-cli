@@ -43,7 +43,8 @@ go install github.com/seayang/cix-cli@latest
 ```
 
 ```
-cix 0.1.0
+cix
+  Version    : 0.1.0
   Build Time : 2026-06-22T03:12:15Z
   Git Commit : b46c3e6
   Go Version : go1.26.4
@@ -272,48 +273,81 @@ docker login
 # 输入 Docker Hub 用户名和密码
 ```
 
-**第二步：构建多平台镜像并直接推送**
+**第二步：设置版本信息（构建 / 推送共用）**
 
 ```bash
-# 将 YOUR_DOCKERHUB_USERNAME 替换为你的 Docker Hub 用户名
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -t YOUR_DOCKERHUB_USERNAME/cix:latest \
-  -t YOUR_DOCKERHUB_USERNAME/cix:0.1.0 \
-  --push \
-  .
+export DOCKER_USER=YOUR_DOCKERHUB_USERNAME   # ← 替换为你的 Docker Hub 用户名
+export VERSION=0.1.0
+export GIT_COMMIT="$(git rev-parse --short HEAD)"
+export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
-> `--push` 会将镜像直接推送到 Registry，多平台镜像以 manifest list 形式存储，无需 `--load`。
+> 这些变量在当前 shell 会话中持续生效。`BUILD_TIME` 在构建与推送两步**共用同一份**，第四步才能命中第三步的构建缓存；若两步各自重新 `$(date ...)`，时间不同会让 buildx 缓存失效而重新编译。
 
-**第三步：验证远程镜像**
+**第三步：本地构建多平台镜像（验证构建，不推送）**
 
-```bash
-# 查看镜像的多平台 manifest
-docker buildx imagetools inspect YOUR_DOCKERHUB_USERNAME/cix:latest
-```
-
-**第四步：在目标机器上拉取使用**
-
-```bash
-docker pull YOUR_DOCKERHUB_USERNAME/cix:latest
-docker run --rm YOUR_DOCKERHUB_USERNAME/cix:latest --help
-```
-
-### 构建时注入版本信息
+> 多平台镜像无法用 `--load` 加载到本地 Docker（`--load` 仅支持单平台），因此这里只做构建验证：编译并打包 `linux/amd64` 与 `linux/arm64`，结果保留在 buildx 构建器缓存中，供下一步直接复用。
 
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION=1.0.0 \
-  --build-arg GIT_COMMIT="$(git rev-parse --short HEAD)" \
-  --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -t YOUR_DOCKERHUB_USERNAME/cix:1.0.0 \
+  --build-arg VERSION="$VERSION" \
+  --build-arg GIT_COMMIT="$GIT_COMMIT" \
+  --build-arg BUILD_TIME="$BUILD_TIME" \
+  -t "$DOCKER_USER/cix:latest" \
+  -t "$DOCKER_USER/cix:$VERSION" \
+  .
+```
+
+如需将多平台镜像存成本地文件（离线分发 / 传输），可用 `--output` 导出为 OCI 镜像包：
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --build-arg VERSION="$VERSION" \
+  --build-arg GIT_COMMIT="$GIT_COMMIT" \
+  --build-arg BUILD_TIME="$BUILD_TIME" \
+  -t "$DOCKER_USER/cix:latest" \
+  --output type=oci,dest=cix-multiarch.tar \
+  .
+```
+
+> 推送该本地包需借助 `skopeo` 或 `crane`（Docker CLI 无法直接 push 多平台 tar）：
+> `skopeo copy oci-archive:cix-multiarch.tar docker://$DOCKER_USER/cix:latest`
+
+**第四步：推送多平台镜像**
+
+```bash
+# 复用上一步构建缓存，打包并以 manifest list 形式推送到 Registry
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --build-arg VERSION="$VERSION" \
+  --build-arg GIT_COMMIT="$GIT_COMMIT" \
+  --build-arg BUILD_TIME="$BUILD_TIME" \
+  -t "$DOCKER_USER/cix:latest" \
+  -t "$DOCKER_USER/cix:$VERSION" \
   --push \
   .
 ```
 
-Dockerfile 已对应声明 `ARG VERSION / BUILD_TIME / GIT_COMMIT`，并通过 ldflags 注入 `cmd/version` 包。
+> `--push` 会把多平台镜像以 manifest list 形式推送到 Registry，无需 `--load`；同一构建器会命中上一步缓存，这一步通常只做上传。
+>
+> Dockerfile 已声明 `ARG VERSION / BUILD_TIME / GIT_COMMIT`，上述 `--build-arg` 经 ldflags 注入到 `cmd/version` 包；不传则走默认值 `dev` / `unknown`。
+
+**第五步：验证远程镜像**
+
+```bash
+# 查看镜像的多平台 manifest（确认含 linux/amd64、linux/arm64）
+docker buildx imagetools inspect "$DOCKER_USER/cix:$VERSION"
+```
+
+**第六步：在目标机器上拉取使用**
+
+```bash
+docker pull "$DOCKER_USER/cix:latest"
+docker run --rm "$DOCKER_USER/cix:latest" --help
+docker run --rm "$DOCKER_USER/cix:latest" version   # 检查注入的版本信息
+```
 
 ### 运行
 
