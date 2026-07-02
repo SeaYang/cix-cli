@@ -37,11 +37,14 @@ FROM alpine:3.22
 #   git git-lfs                 : 代码拉取与大文件
 #   rsync zip                   : 文件同步与归档
 #   jq yq curl                  : JSON/YAML 处理与 HTTP 请求
+#   coreutils                   : GNU 版基础命令（替代 BusyBox 默认实现）
+#   util-linux                  : blkid/lsblk/mount/fdisk 等系统与磁盘工具
 RUN apk add --no-cache \
       bash ca-certificates tzdata \
       openssh sshpass \
       git git-lfs \
-      rsync zip jq yq curl
+      rsync zip jq yq curl \
+      coreutils util-linux
 
 WORKDIR /workspace
 
